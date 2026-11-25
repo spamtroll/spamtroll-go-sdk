@@ -137,14 +137,14 @@ func TestCheckOrHamWithoutKeyAndWithBadBaseURL(t *testing.T) {
 
 func TestCheckReturnsAPIError(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 402, `{"success":false,"error":{"code":"QUOTA_EXCEEDED","message":"Daily quota exceeded","request_id":"req-1"}}`)
+		writeJSON(w, 401, `{"success":false,"error":{"code":"QUOTA_EXCEEDED","message":"Daily quota exceeded","request_id":"req-1"}}`)
 	})
 	_, err := c.Check(context.Background(), &CheckRequest{Content: "x"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("want APIError, got %v", err)
 	}
-	if apiErr.StatusCode != 402 || apiErr.Code != "QUOTA_EXCEEDED" || apiErr.RequestID != "req-1" ||
+	if apiErr.StatusCode != 401 || apiErr.Code != "QUOTA_EXCEEDED" || apiErr.RequestID != "req-1" ||
 		apiErr.Message != "Daily quota exceeded" {
 		t.Fatalf("bad error: %+v", apiErr)
 	}
@@ -155,10 +155,97 @@ func TestCheckReturnsAPIError(t *testing.T) {
 
 func TestErrorBodyAsPlainString(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 400, `{"error":"bad input"}`) })
-	_, err := c.Check(context.Background(), &CheckRequest{Content: "x"})
+	res, err := c.Check(context.Background(), &CheckRequest{Content: "x"})
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Message != "bad input" {
-		t.Fatalf("got %v", err)
+	if err != nil || res == nil || !errors.As(res.Err, &apiErr) || apiErr.Message != "bad input" {
+		t.Fatalf("got %+v, %v", res, err)
+	}
+}
+
+// The strict calls follow the PHP SDK: an answer without a verdict is a
+// skipped result with no error. Only a failed call is an error.
+func TestCheckAnswerWithoutVerdictIsASkippedResult(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+		want   SkipCategory
+	}{
+		{402, `{"error":{"code":"QUOTA_EXCEEDED"}}`, SkipQuota},
+		{403, `{}`, SkipAuth},
+		{422, `{"error":{"code":"VALIDATION_ERROR","message":"content is required"}}`, SkipRejected},
+		{429, `{}`, SkipRateLimit},
+		{302, ``, SkipRedirected},
+		{200, `<html>login</html>`, SkipNoVerdict},
+		{200, `{"success":true,"data":{"status":"weird"}}`, SkipNoVerdict},
+	}
+	for _, tc := range cases {
+		c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, tc.status, tc.body) })
+		res, err := c.Check(context.Background(), &CheckRequest{Content: "x"})
+		if err != nil || res == nil || !res.Skipped || res.ShouldBlock() || res.SkipCategory != tc.want || res.Err == nil {
+			t.Fatalf("status %d: got %+v, %v; want skipped %s", tc.status, res, err, tc.want)
+		}
+		results, err := c.CheckBatch(context.Background(), []CheckRequest{{Content: "a"}, {Content: "b"}})
+		if err != nil || len(results) != 2 || !results[0].Skipped || !results[1].Skipped || results[1].SkipCategory != tc.want {
+			t.Fatalf("batch, status %d: got %+v, %v", tc.status, results, err)
+		}
+	}
+}
+
+func TestCheckFailedCallIsAnError(t *testing.T) {
+	cases := map[string]func() (*Client, int){
+		"401": func() (*Client, int) {
+			c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 401, `{}`) })
+			return c, 0
+		},
+		"500": func() (*Client, int) {
+			c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 500, `{}`) })
+			return c, 0
+		},
+		"no key": func() (*Client, int) { return NewClient(""), 0 },
+	}
+	for name, mk := range cases {
+		c, _ := mk()
+		if res, err := c.Check(context.Background(), &CheckRequest{Content: "x"}); err == nil || res != nil {
+			t.Fatalf("%s: want an error, got %+v, %v", name, res, err)
+		}
+		if res, err := c.CheckBatch(context.Background(), []CheckRequest{{Content: "x"}}); err == nil || res != nil {
+			t.Fatalf("%s: batch: want an error, got %+v, %v", name, res, err)
+		}
+	}
+}
+
+func TestNormalizedScore(t *testing.T) {
+	score := func(raw string, opts ...Option) *Result {
+		c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, 200, `{"success":true,"data":{"status":"blocked","spam_score":`+raw+`}}`)
+		}, opts...)
+		res, err := c.Check(context.Background(), &CheckRequest{Content: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if got := score("15").NormalizedScore(); got != 0.5 {
+		t.Fatalf("15/30 = %v", got)
+	}
+	if got := score("34.8").NormalizedScore(); got != 1 {
+		t.Fatalf("above the denominator must be 1, got %v", got)
+	}
+	if got := score("-3").NormalizedScore(); got != 0 {
+		t.Fatalf("negative must be 0, got %v", got)
+	}
+	if got := score("15", WithScoreDenominator(60)).NormalizedScore(); got != 0.25 {
+		t.Fatalf("15/60 = %v", got)
+	}
+	if got := score("15", WithScoreDenominator(0)).NormalizedScore(); got != 0.5 {
+		t.Fatalf("a bad denominator must be ignored, got %v", got)
+	}
+	skipped := NewClient("").CheckOrHam(context.Background(), &CheckRequest{Content: "x"})
+	if skipped.NormalizedScore() != 0 {
+		t.Fatalf("skipped must be 0")
+	}
+	if (&Result{SpamScore: 15}).NormalizedScore() != 0.5 {
+		t.Fatalf("a Result made by hand must use the default denominator")
 	}
 }
 

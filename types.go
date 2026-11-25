@@ -1,6 +1,9 @@
 package spamtroll
 
-import "unicode/utf8"
+import (
+	"math"
+	"unicode/utf8"
+)
 
 // Source tells the API what kind of content you are scanning.
 const (
@@ -122,6 +125,22 @@ type Result struct {
 	SkipCategory SkipCategory
 	// Err is the reason for a skipped result. It is nil otherwise.
 	Err error
+
+	scoreDivisor float64
+}
+
+// NormalizedScore is SpamScore as a number from 0 to 1: the raw score divided
+// by the client's score denominator (30 by default), at most 1. It is 0 for a
+// skipped result. Use it to show a score. Status is what decides.
+func (r *Result) NormalizedScore() float64 {
+	if r.Skipped || r.SpamScore <= 0 {
+		return 0
+	}
+	d := r.scoreDivisor
+	if d <= 0 {
+		d = DefaultScoreDenominator
+	}
+	return math.Min(1, r.SpamScore/d)
 }
 
 // ShouldBlock is true only for an explicit "blocked" verdict.
@@ -133,8 +152,9 @@ func (r *Result) ShouldModerate() bool { return !r.Skipped && r.Status == Status
 // IsSafe is true for a "safe" verdict and for every skipped result.
 func (r *Result) IsSafe() bool { return r.Skipped || r.Status == StatusSafe }
 
-func newResult(d *scanData) *Result {
+func newResult(d *scanData, scoreDivisor float64) *Result {
 	return &Result{
+		scoreDivisor:     scoreDivisor,
 		Status:           d.Status,
 		SubmissionID:     d.SubmissionID,
 		SpamScore:        d.SpamScore,

@@ -12,5 +12,7 @@ All notable changes to this project are written here. The format follows
 - `CheckBatch` and `CheckBatchOrHam` for `POST /scan/batch`.
 - `SubmitFeedback` for `POST /scan/feedback` and `Status` for `GET /scan/status`.
 - Fail-open results: every problem gives a skipped result with a reason in `SkipCategory`.
+- `Result.NormalizedScore()` and `WithScoreDenominator`: the score as a number from 0 to 1,
+  the same as `getSpamScore()` in the PHP SDK.
 - Retries with a total time budget, an `Idempotency-Key` on every POST, no redirects
   and a 1 MiB limit for answers.

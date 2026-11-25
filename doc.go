@@ -19,6 +19,8 @@
 // an explicit "blocked" verdict can block content. Use Result.Skipped,
 // Result.SkipCategory and Result.Err to log what went wrong.
 //
-// Check, CheckBatch, SubmitFeedback and Status return errors instead, for
-// code that wants to handle them itself.
+// Check, CheckBatch, SubmitFeedback and Status are for code that wants to
+// handle problems itself. Check and CheckBatch return an error only when the
+// call failed (no key, 401, 5xx, network). An answer without a verdict, like
+// 402 or 429, is a skipped result with a nil error, as in the PHP SDK.
 package spamtroll
