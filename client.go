@@ -260,8 +260,8 @@ func (c *Client) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]*Result
 
 // SubmitFeedback tells the API that a moderator disagrees with a verdict
 // (POST /scan/feedback). A spam label also trains the classifier of your
-// platform. The API allows 20 requests a minute and 100 corrections a day;
-// both limits answer with 429.
+// platform. Feedback is limited per minute and per day, and the daily limit
+// depends on the plan (see https://spamtroll.io/faq#limits); both limits answer with 429.
 func (c *Client) SubmitFeedback(ctx context.Context, req *FeedbackRequest) error {
 	if req == nil || req.SubmissionID == "" {
 		return fmt.Errorf("%w: submission ID is required", ErrInvalidRequest)
