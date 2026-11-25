@@ -1,5 +1,10 @@
 # Spamtroll Go SDK
 
+[![CI](https://github.com/spamtroll/spamtroll-go-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/spamtroll/spamtroll-go-sdk/actions/workflows/ci.yml)
+[![Vulnerability check](https://github.com/spamtroll/spamtroll-go-sdk/actions/workflows/vulncheck.yml/badge.svg?branch=main)](https://github.com/spamtroll/spamtroll-go-sdk/actions/workflows/vulncheck.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/spamtroll/spamtroll-go-sdk.svg)](https://pkg.go.dev/github.com/spamtroll/spamtroll-go-sdk)
+[![License: MIT](https://img.shields.io/github/license/spamtroll/spamtroll-go-sdk)](LICENSE)
+
 Go client for the [Spamtroll](https://spamtroll.io) spam detection API. It has
 no dependencies outside the standard library and needs Go 1.22 or newer.
 
