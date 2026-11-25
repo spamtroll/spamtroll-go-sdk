@@ -20,6 +20,8 @@ const (
 	DefaultMaxRetries     = 2
 	DefaultRetryBaseDelay = 250 * time.Millisecond
 	DefaultTotalBudget    = 6 * time.Second
+	// DefaultScoreDenominator turns the raw score into a number from 0 to 1.
+	DefaultScoreDenominator = 30.0
 )
 
 // maxResponseBytes is the biggest body the client reads. A captive portal or
@@ -41,6 +43,7 @@ type Client struct {
 	retryBaseDelay time.Duration
 	totalBudget    time.Duration
 	userAgent      string
+	scoreDivisor   float64
 	configErr      error
 }
 
@@ -109,6 +112,17 @@ func WithTotalBudget(d time.Duration) Option {
 	}
 }
 
+// WithScoreDenominator sets the number that Result.NormalizedScore divides the
+// raw score by. The default is DefaultScoreDenominator. A value that is not
+// above zero is ignored.
+func WithScoreDenominator(d float64) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.scoreDivisor = d
+		}
+	}
+}
+
 // WithUserAgent sets the User-Agent header.
 func WithUserAgent(ua string) Option {
 	return func(c *Client) {
@@ -129,6 +143,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 		maxRetries:     DefaultMaxRetries,
 		retryBaseDelay: DefaultRetryBaseDelay,
 		totalBudget:    DefaultTotalBudget,
+		scoreDivisor:   DefaultScoreDenominator,
 		userAgent:      "spamtroll-go-sdk/" + Version,
 	}
 	for _, opt := range opts {
@@ -154,8 +169,16 @@ func (c *Client) CheckOrHam(ctx context.Context, req *CheckRequest) *Result {
 	return res
 }
 
-// Check scans content (POST /scan/check). It returns an error when there is
-// no verdict. If you handle the error yourself, let the content through.
+// Check scans content (POST /scan/check).
+//
+// It returns an error when the call itself failed: there is no API key, the
+// API refused the key (401), the network failed, the API answered with a 5xx,
+// or the request is invalid. If you handle the error yourself, let the content
+// through.
+//
+// When the API answered but gave no verdict (quota used up, too many requests,
+// another 4xx, a redirect, or a body that is not a verdict) the result is
+// skipped and the error is nil. This is the same as checkSpam in the PHP SDK.
 func (c *Client) Check(ctx context.Context, req *CheckRequest) (*Result, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: request is nil", ErrInvalidRequest)
@@ -163,9 +186,16 @@ func (c *Client) Check(ctx context.Context, req *CheckRequest) (*Result, error) 
 	payload := req.payload()
 	raw, err := c.do(ctx, http.MethodPost, "/scan/check", &payload)
 	if err != nil {
+		if answeredWithoutVerdict(err) {
+			return skippedResult(err), nil
+		}
 		return nil, err
 	}
-	return decodeResult(raw)
+	res, err := c.decodeResult(raw)
+	if err != nil {
+		return skippedResult(err), nil
+	}
+	return res, nil
 }
 
 // CheckBatchOrHam scans up to MaxBatchItems items in one call and never fails.
@@ -174,10 +204,7 @@ func (c *Client) Check(ctx context.Context, req *CheckRequest) (*Result, error) 
 func (c *Client) CheckBatchOrHam(ctx context.Context, reqs []CheckRequest) []*Result {
 	results, err := c.CheckBatch(ctx, reqs)
 	if err != nil {
-		results = make([]*Result, len(reqs))
-		for i := range results {
-			results[i] = skippedResult(err)
-		}
+		results = skipAll(len(reqs), err)
 	}
 	return results
 }
@@ -186,8 +213,10 @@ func (c *Client) CheckBatchOrHam(ctx context.Context, reqs []CheckRequest) []*Re
 // The API counts the whole batch as one scan for your daily quota.
 //
 // On success the result has one entry for each item, in the same order. An
-// item the API could not scan is a skipped result, not an error. The API
-// refuses a batch with more than 2 MB of content and raw messages together.
+// item the API could not scan is a skipped result, not an error. The same is
+// true for the whole call when the API answered without a verdict (see Check):
+// every item is then skipped and the error is nil. The API refuses a batch
+// with more than 2 MB of content and raw messages together.
 func (c *Client) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]*Result, error) {
 	if len(reqs) == 0 {
 		return nil, fmt.Errorf("%w: a batch needs at least one item", ErrInvalidRequest)
@@ -201,6 +230,9 @@ func (c *Client) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]*Result
 	}
 	raw, err := c.do(ctx, http.MethodPost, "/scan/batch", map[string]any{"items": items})
 	if err != nil {
+		if answeredWithoutVerdict(err) {
+			return skipAll(len(reqs), err), nil
+		}
 		return nil, err
 	}
 
@@ -208,7 +240,7 @@ func (c *Client) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]*Result
 		Results []json.RawMessage `json:"results"`
 	}
 	if err := json.Unmarshal(unwrapData(raw), &body); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNoVerdict, err)
+		return skipAll(len(reqs), fmt.Errorf("%w: %v", ErrNoVerdict, err)), nil
 	}
 
 	results := make([]*Result, len(reqs))
@@ -217,7 +249,7 @@ func (c *Client) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]*Result
 			var d scanData
 			// The API reports an item it could not scan as {"status":"error"}.
 			if json.Unmarshal(body.Results[i], &d) == nil && validStatus(d.Status) {
-				results[i] = newResult(&d)
+				results[i] = newResult(&d, c.scoreDivisor)
 				continue
 			}
 		}
@@ -255,12 +287,20 @@ func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 	return data, nil
 }
 
-func decodeResult(raw []byte) (*Result, error) {
+func (c *Client) decodeResult(raw []byte) (*Result, error) {
 	var d scanData
 	if err := json.Unmarshal(unwrapData(raw), &d); err != nil || !validStatus(d.Status) {
 		return nil, ErrNoVerdict
 	}
-	return newResult(&d), nil
+	return newResult(&d, c.scoreDivisor), nil
+}
+
+func skipAll(n int, err error) []*Result {
+	results := make([]*Result, n)
+	for i := range results {
+		results[i] = skippedResult(err)
+	}
+	return results
 }
 
 // unwrapData returns the "data" object of {"success":true,"data":{...}}, or

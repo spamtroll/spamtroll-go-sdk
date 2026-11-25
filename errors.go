@@ -75,6 +75,21 @@ const (
 	SkipNoVerdict SkipCategory = "no_verdict"
 )
 
+// answeredWithoutVerdict is true when the API answered, but with no verdict,
+// and the call itself did not fail. That is a body that is not a verdict, a
+// redirect, or a 4xx other than 401. Check and CheckBatch turn it into skipped
+// results, like the PHP SDK. A 401, a 5xx and network errors stay errors.
+func answeredWithoutVerdict(err error) bool {
+	if errors.Is(err, ErrNoVerdict) {
+		return true
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 300 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusUnauthorized
+	}
+	return false
+}
+
 func categoryOf(err error) SkipCategory {
 	if err == nil {
 		return SkipNone

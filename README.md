@@ -52,8 +52,15 @@ Use `SkipCategory` and `Err` to write the reason to your log. The categories are
 `transport` and `no_verdict`.
 
 If you want to handle errors yourself, use `Check`, `CheckBatch`,
-`SubmitFeedback` and `Status`. They return an error, and an `*APIError` when the
-API answered with a failure status:
+`SubmitFeedback` and `Status`. `SubmitFeedback` and `Status` return an error for
+every problem. `Check` and `CheckBatch` follow the PHP SDK:
+
+- When the API answered but gave no verdict (402, 403, 429, another 4xx, a
+  redirect, or a body that is not a verdict), you get a skipped result and a
+  `nil` error. For `CheckBatch` every item is skipped.
+- When the call itself failed (no API key, 401, 5xx, a network error or an
+  invalid request), you get an error, and an `*APIError` when the API answered
+  with a failure status:
 
 ```go
 res, err := client.Check(ctx, req)
@@ -64,6 +71,15 @@ if errors.As(err, &apiErr) {
 ```
 
 If you get an error, let the content through.
+
+## Score
+
+`Result.SpamScore` is the raw score from the API. It has no upper limit, and
+the API counts about 15 as spam. `Result.NormalizedScore()` gives a number from
+0 to 1 (the raw score divided by 30, at most 1), which is the same as
+`getSpamScore()` in the PHP SDK. Change the divisor with
+`WithScoreDenominator`. Show the score to people if you like, but let `Status`
+decide what to do with the content.
 
 ## Scanning many items
 
@@ -108,6 +124,8 @@ client := spamtroll.NewClient("your-api-key",
 - A call is retried after a network error or a 5xx answer. A POST that got a
   5xx is sent at most twice, with the same `Idempotency-Key`.
 - Errors like 401, 402, 422 and 429 are not retried.
+- The total budget is exact in this SDK. The PHP SDK can pass it by less than one
+  second, because curl takes whole seconds there.
 - Redirects are not followed, so your API key is never sent to another host.
 - Content longer than 64 KiB is cut on a character boundary before it is sent.
 - The client reads at most 1 MiB of an answer.
