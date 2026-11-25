@@ -111,7 +111,7 @@ err := client.SubmitFeedback(ctx, &spamtroll.FeedbackRequest{
 })
 ```
 
-The API allows 20 feedback requests a minute and 100 corrections a day.
+Feedback is limited per API key and per platform each day, and the daily limit depends on your plan. See [Limits and quotas](https://spamtroll.io/faq#limits) for the current numbers. Over a limit the API answers with 429.
 
 ## Options
 

@@ -6,6 +6,9 @@ All notable changes to this project are written here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The README and the `SubmitFeedback` comment no longer state the feedback limits. They change with the plan, so both now link to the [FAQ](https://spamtroll.io/faq#limits).
+
 ### Added
 - First version of the SDK, with no dependencies outside the standard library.
 - `Check` and `CheckOrHam` for `POST /scan/check`.
